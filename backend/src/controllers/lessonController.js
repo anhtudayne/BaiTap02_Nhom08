@@ -1,4 +1,4 @@
-import db from '../models';
+import prisma from '../config/prismaClient';
 
 export const handleCreateLesson = async (req, res, next) => {
     try {
@@ -7,14 +7,16 @@ export const handleCreateLesson = async (req, res, next) => {
             return res.status(400).json({ status: 400, message: 'Thiếu thông tin sectionId hoặc title' });
         }
         
-        const lesson = await db.Lesson.create({ 
-            sectionId, 
-            title, 
-            type: type || 'video', 
-            content, 
-            videoUrl, 
-            duration, 
-            order: order || 0 
+        const lesson = await prisma.lesson.create({ 
+            data: {
+                sectionId: Number(sectionId), 
+                title, 
+                type: type || 'video', 
+                content, 
+                videoUrl, 
+                duration: duration ? Number(duration) : null, 
+                order: order || 0 
+            }
         });
         return res.status(201).json({ status: 201, message: 'Tạo bài học thành công', data: lesson });
     } catch (error) {
@@ -26,11 +28,11 @@ export const handleGetLessons = async (req, res, next) => {
     try {
         const { sectionId } = req.query;
         let where = {};
-        if (sectionId) where.sectionId = sectionId;
+        if (sectionId) where.sectionId = Number(sectionId);
 
-        const lessons = await db.Lesson.findAll({
+        const lessons = await prisma.lesson.findMany({
             where,
-            order: [['order', 'ASC']]
+            orderBy: { order: 'asc' }
         });
         
         return res.status(200).json({ status: 200, data: lessons });
@@ -42,13 +44,17 @@ export const handleGetLessons = async (req, res, next) => {
 export const handleDeleteLesson = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const lesson = await db.Lesson.findByPk(id);
+        const lesson = await prisma.lesson.findUnique({
+            where: { id: Number(id) }
+        });
         
         if (!lesson) {
             return res.status(404).json({ status: 404, message: 'Không tìm thấy bài học' });
         }
         
-        await lesson.destroy();
+        await prisma.lesson.delete({
+            where: { id: Number(id) }
+        });
         return res.status(200).json({ status: 200, message: 'Xóa bài học thành công' });
     } catch (error) {
         next(error);

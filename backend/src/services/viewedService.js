@@ -1,41 +1,39 @@
-const db = require('../models/index');
-const ViewedCourse = db.ViewedCourse;
-const Course = db.Course;
-const Category = db.Category;
-const CourseImage = db.CourseImage;
+import prisma from '../config/prismaClient';
 
-const includeOptions = [
-    { model: Category, as: 'category', attributes: ['id', 'name', 'slug'] },
-    { model: CourseImage, as: 'images', attributes: ['id', 'imageUrl', 'isPrimary', 'sortOrder'] },
-];
+const courseInclude = {
+    category: { select: { id: true, name: true, slug: true } },
+    images: { select: { id: true, imageUrl: true, isPrimary: true, sortOrder: true } }
+};
 
 const addViewedCourse = async (userId, courseId) => {
-    const [viewed, created] = await ViewedCourse.findOrCreate({
-        where: { userId, courseId },
-        defaults: { userId, courseId }
+    const existing = await prisma.viewedCourse.findFirst({
+        where: { userId: Number(userId), courseId: Number(courseId) }
     });
 
-    if (!created) {
-        // Update the updatedAt timestamp to push it to the top of recently viewed
-        viewed.changed('updatedAt', true);
-        await viewed.save();
+    if (existing) {
+        await prisma.viewedCourse.update({
+            where: { id: existing.id },
+            data: { updatedAt: new Date() }
+        });
+    } else {
+        await prisma.viewedCourse.create({
+            data: { userId: Number(userId), courseId: Number(courseId) }
+        });
     }
 
     return { success: true };
 };
 
 const getViewedCourses = async (userId) => {
-    const viewedRecords = await ViewedCourse.findAll({
-        where: { userId },
-        include: [
-            {
-                model: Course,
-                as: 'course',
-                include: includeOptions
+    const viewedRecords = await prisma.viewedCourse.findMany({
+        where: { userId: Number(userId) },
+        include: {
+            course: {
+                include: courseInclude
             }
-        ],
-        order: [['updatedAt', 'DESC']],
-        limit: 8
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 8
     });
 
     // Extract courses and filter out nulls

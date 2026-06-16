@@ -1,6 +1,4 @@
-import db from '../models';
-const { Order, OrderItem, User, Course } = db;
-import { Op } from 'sequelize';
+import prisma from '../config/prismaClient';
 
 export const getDashboardStatsService = async (startDate, endDate) => {
     try {
@@ -10,7 +8,8 @@ export const getDashboardStatsService = async (startDate, endDate) => {
             const end = new Date(endDate);
             end.setHours(23, 59, 59, 999);
             dateFilter.createdAt = {
-                [Op.between]: [new Date(startDate), end]
+                gte: new Date(startDate),
+                lte: end
             };
         } else {
             // Default 30 days
@@ -19,13 +18,14 @@ export const getDashboardStatsService = async (startDate, endDate) => {
             start.setDate(end.getDate() - 29);
             start.setHours(0, 0, 0, 0);
             dateFilter.createdAt = {
-                [Op.between]: [start, end]
+                gte: start,
+                lte: end
             };
         }
 
-        const orders = await Order.findAll({
+        const orders = await prisma.order.findMany({
             where: dateFilter,
-            attributes: ['id', 'status', 'totalAmount', 'createdAt']
+            select: { id: true, status: true, totalAmount: true, createdAt: true }
         });
 
         let totalRevenue = 0;
@@ -59,7 +59,7 @@ export const getDashboardStatsService = async (startDate, endDate) => {
             revenue: revenueChartMap[date]
         })).sort((a, b) => new Date(a.date) - new Date(b.date));
 
-        const totalCustomers = await User.count({
+        const totalCustomers = await prisma.user.count({
             where: {
                 roleId: 'user',
                 ...dateFilter
@@ -67,42 +67,44 @@ export const getDashboardStatsService = async (startDate, endDate) => {
         });
 
         // Top 10 courses
-        const topCoursesData = await OrderItem.findAll({
-            attributes: [
-                'courseId',
-                [db.sequelize.fn('COUNT', db.sequelize.col('OrderItem.id')), 'salesCount'],
-                [db.sequelize.fn('SUM', db.sequelize.col('OrderItem.price')), 'totalCourseRevenue']
-            ],
-            include: [
-                {
-                    model: Order,
-                    as: 'order',
-                    where: { status: 'paid', ...dateFilter },
-                    attributes: []
-                },
-                {
-                    model: Course,
-                    as: 'course',
-                    attributes: ['id', 'name', 'thumbnail', 'price']
+        const orderItemsForTop = await prisma.orderItem.findMany({
+            where: {
+                order: {
+                    status: 'paid',
+                    ...dateFilter
                 }
-            ],
-            group: ['courseId', 'course.id', 'course.name', 'course.thumbnail', 'course.price'],
-            order: [[db.sequelize.fn('COUNT', db.sequelize.col('OrderItem.id')), 'DESC']],
-            limit: 10,
+            },
+            include: {
+                course: {
+                    select: { id: true, name: true, thumbnail: true, price: true }
+                }
+            }
         });
 
-        const formattedTopCourses = topCoursesData.map(item => ({
-            courseId: item.courseId,
-            salesCount: parseInt(item.getDataValue('salesCount'), 10),
-            totalCourseRevenue: parseFloat(item.getDataValue('totalCourseRevenue')),
-            course: item.course
-        }));
+        const courseSales = {};
+        for (const item of orderItemsForTop) {
+            if (!item.course) continue; // just in case
+            if (!courseSales[item.courseId]) {
+                courseSales[item.courseId] = {
+                    courseId: item.courseId,
+                    salesCount: 0,
+                    totalCourseRevenue: 0,
+                    course: item.course
+                };
+            }
+            courseSales[item.courseId].salesCount += 1;
+            courseSales[item.courseId].totalCourseRevenue += Number(item.price);
+        }
 
-        const recentOrders = await Order.findAll({
+        const formattedTopCourses = Object.values(courseSales)
+            .sort((a, b) => b.salesCount - a.salesCount)
+            .slice(0, 10);
+
+        const recentOrders = await prisma.order.findMany({
             where: dateFilter,
-            include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'email', 'image'] }],
-            order: [['createdAt', 'DESC']],
-            limit: 20
+            include: { user: { select: { id: true, firstName: true, lastName: true, email: true, image: true } } },
+            orderBy: { createdAt: 'desc' },
+            take: 20
         });
 
         return {

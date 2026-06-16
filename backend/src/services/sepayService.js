@@ -1,4 +1,4 @@
-import db from '../models';
+import prisma from '../config/prismaClient';
 import * as notificationService from './notificationService';
 import { sendOrderPaidEmail } from './emailService';
 
@@ -17,18 +17,20 @@ export const processWebhook = async (webhookData) => {
 
     try {
         // 1. Lưu log giao dịch
-        await db.WebhookLog.create({
-            referenceCode: String(referenceCode),
-            gateway,
-            transactionDate: transactionDate ? new Date(transactionDate) : new Date(),
-            accountNumber,
-            subAccount,
-            content,
-            transferType,
-            transferAmount,
-            accumulated,
-            status: 'received',
-            payload: webhookData
+        await prisma.webhookLog.create({
+            data: {
+                referenceCode: String(referenceCode),
+                gateway,
+                transactionDate: transactionDate ? new Date(transactionDate) : new Date(),
+                accountNumber,
+                subAccount,
+                content,
+                transferType,
+                transferAmount,
+                accumulated,
+                status: 'received',
+                payload: webhookData
+            }
         });
 
         // 2. Bỏ qua nếu không phải tiền vào
@@ -45,9 +47,9 @@ export const processWebhook = async (webhookData) => {
         const orderCode = orderIdMatch[0].toUpperCase();
 
         // 4. Tìm đơn hàng
-        const order = await db.Order.findOne({
+        const order = await prisma.order.findUnique({
             where: { code: orderCode },
-            include: [{ model: db.OrderItem, as: 'orderItems' }]
+            include: { orderItems: true }
         });
 
         // Nếu không tìm thấy hoặc đã thanh toán / hủy
@@ -73,26 +75,28 @@ export const processWebhook = async (webhookData) => {
 
         // Nếu khách chuyển bằng hoặc dư tiền: Cập nhật thành paid và cấp quyền khóa học
         // 6. Cập nhật Order & Cấp quyền
-        const transaction = await db.sequelize.transaction();
         try {
-            await order.update({ status: 'paid' }, { transaction });
+            await prisma.$transaction(async (tx) => {
+                await tx.order.update({
+                    where: { id: order.id },
+                    data: { status: 'paid' }
+                });
 
-            const courseAccessData = order.orderItems.map(item => ({
-                userId: order.userId,
-                courseId: item.courseId,
-                status: 'active'
-            }));
+                const courseAccessData = order.orderItems.map(item => ({
+                    userId: order.userId,
+                    courseId: item.courseId,
+                    status: 'active'
+                }));
 
-            await db.UserCourse.bulkCreate(courseAccessData, { transaction });
-
-            await transaction.commit();
+                await tx.userCourse.createMany({ data: courseAccessData });
+            });
 
             // === NOTIFICATION: Order paid ===
             try {
-                const user = await db.User.findByPk(order.userId, { attributes: ['id', 'email', 'firstName'] });
+                const user = await prisma.user.findUnique({ where: { id: order.userId }, select: { id: true, email: true, firstName: true } });
                 const courseNames = [];
                 for (const item of order.orderItems) {
-                    const course = await db.Course.findByPk(item.courseId, { attributes: ['name'] });
+                    const course = await prisma.course.findUnique({ where: { id: item.courseId }, select: { name: true } });
                     if (course) courseNames.push(course.name);
                 }
 
@@ -107,10 +111,18 @@ export const processWebhook = async (webhookData) => {
                 // Send email
                 if (user?.email) {
                     await sendOrderPaidEmail(user.email, user.firstName, orderCode, order.totalAmount, courseNames);
-                    await db.Notification.update(
-                        { isEmailSent: true },
-                        { where: { userId: order.userId, type: 'order_paid', data: { orderId: order.id } }, order: [['createdAt', 'DESC']], limit: 1 }
-                    );
+                    
+                    const notif = await prisma.notification.findFirst({
+                        where: { userId: order.userId, type: 'order_paid' },
+                        orderBy: { createdAt: 'desc' }
+                    });
+                    
+                    if (notif) {
+                        await prisma.notification.update({
+                            where: { id: notif.id },
+                            data: { isEmailSent: true }
+                        });
+                    }
                 }
             } catch (notifErr) {
                 console.error('Lỗi gửi notification/email (không ảnh hưởng thanh toán):', notifErr);
@@ -118,7 +130,6 @@ export const processWebhook = async (webhookData) => {
 
             return { success: true, message: 'Order paid and access granted successfully' };
         } catch (err) {
-            await transaction.rollback();
             throw err;
         }
 

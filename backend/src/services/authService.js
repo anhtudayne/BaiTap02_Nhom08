@@ -1,16 +1,14 @@
 import bcrypt from 'bcryptjs';
-import db from '../models/index';
+import prisma from '../config/prismaClient';
 import { generateOTP, getOTPExpireTime } from '../utils/otpHelper';
 import { sendOTPEmail } from './emailService';
 import { generateToken } from '../utils/jwtHelper';
-
-const User = db.User;
 const salt = bcrypt.genSaltSync(10);
 
 // Register user
 export const registerUser = async (data) => {
     try {
-        const existingUser = await User.findOne({ where: { email: data.email } });
+        const existingUser = await prisma.user.findUnique({ where: { email: data.email } });
 
         if (existingUser) {
             // Re-register if not active
@@ -19,15 +17,18 @@ export const registerUser = async (data) => {
                 const otpExpires = getOTPExpireTime();
                 const hashedPassword = bcrypt.hashSync(data.password, salt);
 
-                await existingUser.update({
-                    password: hashedPassword,
-                    firstName: data.firstName,
-                    lastName: data.lastName,
-                    phoneNumber: data.phoneNumber || null,
-                    address: data.address || null,
-                    gender: data.gender !== undefined ? data.gender : true,
-                    otp: otpCode,
-                    otpExpires: otpExpires,
+                await prisma.user.update({
+                    where: { id: existingUser.id },
+                    data: {
+                        password: hashedPassword,
+                        firstName: data.firstName,
+                        lastName: data.lastName,
+                        phoneNumber: data.phoneNumber || null,
+                        address: data.address || null,
+                        gender: data.gender !== undefined ? data.gender : true,
+                        otp: otpCode,
+                        otpExpires: otpExpires,
+                    }
                 });
 
                 let emailSent = true;
@@ -61,18 +62,20 @@ export const registerUser = async (data) => {
         const otpCode = generateOTP();
         const otpExpires = getOTPExpireTime();
 
-        await User.create({
-            email: data.email,
-            password: hashedPassword,
-            firstName: data.firstName,
-            lastName: data.lastName,
-            phoneNumber: data.phoneNumber || null,
-            address: data.address || null,
-            gender: data.gender !== undefined ? data.gender : true,
-            roleId: 'user',
-            isActive: false,
-            otp: otpCode,
-            otpExpires: otpExpires,
+        await prisma.user.create({
+            data: {
+                email: data.email,
+                password: hashedPassword,
+                firstName: data.firstName,
+                lastName: data.lastName,
+                phoneNumber: data.phoneNumber || null,
+                address: data.address || null,
+                gender: data.gender !== undefined ? data.gender : true,
+                roleId: 'user',
+                isActive: false,
+                otp: otpCode,
+                otpExpires: otpExpires,
+            }
         });
 
         let emailSent = true;
@@ -108,7 +111,7 @@ export const registerUser = async (data) => {
 // Verify OTP
 export const verifyOTP = async (email, otp) => {
     try {
-        const user = await User.findOne({ where: { email: email } });
+        const user = await prisma.user.findUnique({ where: { email: email } });
         if (!user) {
             return { status: 404, message: 'Không tìm thấy tài khoản với email này.' };
         }
@@ -125,10 +128,13 @@ export const verifyOTP = async (email, otp) => {
             return { status: 400, message: 'Mã OTP đã hết hạn. Vui lòng yêu cầu gửi lại OTP mới.' };
         }
 
-        await user.update({
-            isActive: true,
-            otp: null,
-            otpExpires: null,
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                isActive: true,
+                otp: null,
+                otpExpires: null,
+            }
         });
 
         return { status: 200, message: 'Kích hoạt tài khoản thành công!' };
@@ -141,7 +147,7 @@ export const verifyOTP = async (email, otp) => {
 // Resend OTP
 export const resendOTP = async (email) => {
     try {
-        const user = await User.findOne({ where: { email: email } });
+        const user = await prisma.user.findUnique({ where: { email: email } });
         if (!user) {
             return { status: 404, message: 'Không tìm thấy tài khoản với email này.' };
         }
@@ -153,9 +159,12 @@ export const resendOTP = async (email) => {
         const otpCode = generateOTP();
         const otpExpires = getOTPExpireTime();
 
-        await user.update({
-            otp: otpCode,
-            otpExpires: otpExpires,
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                otp: otpCode,
+                otpExpires: otpExpires,
+            }
         });
 
         let emailSent = true;
@@ -187,7 +196,7 @@ export const resendOTP = async (email) => {
 // Login user
 export const loginUser = async (email, password) => {
     try {
-        const user = await User.findOne({ where: { email: email } });
+        const user = await prisma.user.findUnique({ where: { email: email } });
         if (!user) {
             return { status: 404, message: 'Email hoặc mật khẩu không chính xác.' };
         }
@@ -232,7 +241,7 @@ export const loginUser = async (email, password) => {
 // Forgot Password
 export const forgotPassword = async (email) => {
     try {
-        const user = await User.findOne({ where: { email: email } });
+        const user = await prisma.user.findUnique({ where: { email: email } });
         if (!user) {
             return { status: 404, message: 'Không tìm thấy tài khoản với email này.' };
         }
@@ -244,9 +253,12 @@ export const forgotPassword = async (email) => {
         const otpCode = generateOTP();
         const otpExpires = getOTPExpireTime();
 
-        await user.update({
-            otp: otpCode,
-            otpExpires: otpExpires,
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                otp: otpCode,
+                otpExpires: otpExpires,
+            }
         });
 
         let emailSent = true;
@@ -278,7 +290,7 @@ export const forgotPassword = async (email) => {
 // Reset Password
 export const resetPassword = async (email, otp, newPassword) => {
     try {
-        const user = await User.findOne({ where: { email: email } });
+        const user = await prisma.user.findUnique({ where: { email: email } });
         if (!user) {
             return { status: 404, message: 'Không tìm thấy tài khoản với email này.' };
         }
@@ -293,10 +305,13 @@ export const resetPassword = async (email, otp, newPassword) => {
 
         const hashedPassword = bcrypt.hashSync(newPassword, salt);
 
-        await user.update({
-            password: hashedPassword,
-            otp: null,
-            otpExpires: null,
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                password: hashedPassword,
+                otp: null,
+                otpExpires: null,
+            }
         });
 
         return { status: 200, message: 'Đặt lại mật khẩu thành công!' };

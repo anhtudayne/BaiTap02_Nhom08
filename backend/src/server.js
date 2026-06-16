@@ -75,15 +75,8 @@ app.use(errorHandler);
 
 connectDB();
 
-// Sync database
-const db = require('./models/index');
-db.sequelize.sync()
-    .then(() => {
-        console.log('Đồng bộ database thành công.');
-    })
-    .catch((err) => {
-        console.error('Lỗi đồng bộ database:', err);
-    });
+// Sync database is managed by Prisma via CLI (e.g., npx prisma db push)
+// We don't sync database schemas at runtime manually.
 
 let port = process.env.PORT || 8089;
 

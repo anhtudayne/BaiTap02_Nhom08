@@ -1,25 +1,12 @@
-import { Sequelize } from 'sequelize';
-
-const env = process.env.NODE_ENV || 'development';
-const config = require(__dirname + '/config.json')[env];
-
-const sequelize = new Sequelize(
-    config.database,
-    config.username,
-    config.password,
-    {
-        host: config.host,
-        dialect: config.dialect,
-        logging: false,
-    }
-);
+import prisma from './prismaClient';
 
 let connectDB = async () => {
     try {
-        await sequelize.authenticate();
-        console.log('Kết nối database thành công.');
+        await prisma.$connect();
+        console.log('Kết nối Prisma database thành công.');
     } catch (error) {
-        console.error('Không thể kết nối database:', error);
+        console.error('Không thể kết nối Prisma database:', error);
+        process.exit(1);
     }
 };
 

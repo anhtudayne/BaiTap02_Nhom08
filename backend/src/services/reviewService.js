@@ -1,4 +1,4 @@
-import db from '../models';
+import prisma from '../config/prismaClient';
 import * as notificationService from './notificationService';
 
 const POINTS_PER_REVIEW = 10;
@@ -8,105 +8,101 @@ const POINTS_PER_REVIEW = 10;
  * Tự động cộng điểm tích lũy và cập nhật rating trung bình.
  */
 export const createReview = async (userId, courseId, rating, comment) => {
-    const transaction = await db.sequelize.transaction();
     try {
-        // 1. Kiểm tra user đã mua khóa học chưa (Order status = 'paid' chứa courseId)
-        const paidOrder = await db.Order.findOne({
-            where: { userId, status: 'paid' },
-            include: [{
-                model: db.OrderItem,
-                as: 'orderItems',
-                where: { courseId },
-                required: true,
-            }],
+        return await prisma.$transaction(async (tx) => {
+            // 1. Kiểm tra user đã mua khóa học chưa (Order status = 'paid' chứa courseId)
+            const paidOrder = await tx.order.findFirst({
+                where: {
+                    userId: Number(userId),
+                    status: 'paid',
+                    orderItems: {
+                        some: { courseId: Number(courseId) }
+                    }
+                }
+            });
+
+            if (!paidOrder) {
+                const error = new Error('Bạn chưa mua khóa học này hoặc đơn hàng chưa thanh toán.');
+                error.statusCode = 400;
+                throw error;
+            }
+
+            // 2. Kiểm tra đã review chưa
+            const existingReview = await tx.review.findFirst({
+                where: { userId: Number(userId), courseId: Number(courseId) },
+            });
+
+            if (existingReview) {
+                const error = new Error('Bạn đã đánh giá khóa học này rồi.');
+                error.statusCode = 400;
+                throw error;
+            }
+
+            // 3. Tạo review
+            const review = await tx.review.create({
+                data: {
+                    userId: Number(userId),
+                    courseId: Number(courseId),
+                    orderId: paidOrder.id,
+                    rating: Number(rating),
+                    comment: comment || null,
+                }
+            });
+
+            // 4. Cập nhật rating trung bình của khóa học
+            const avgResult = await tx.review.aggregate({
+                where: { courseId: Number(courseId) },
+                _avg: { rating: true },
+            });
+
+            const avgRating = avgResult._avg.rating || 0;
+            await tx.course.update({
+                where: { id: Number(courseId) },
+                data: { rating: Math.round(avgRating * 10) / 10 }
+            });
+
+            // 5. Cộng điểm tích lũy cho user
+            await tx.user.update({
+                where: { id: Number(userId) },
+                data: { loyaltyPoints: { increment: POINTS_PER_REVIEW } }
+            });
+
+            // 6. Ghi log lịch sử điểm
+            const courseName = await tx.course.findUnique({
+                where: { id: Number(courseId) },
+                select: { name: true },
+            });
+
+            await tx.loyaltyPoint.create({
+                data: {
+                    userId: Number(userId),
+                    points: POINTS_PER_REVIEW,
+                    type: 'earn',
+                    description: `Đánh giá khóa học "${courseName?.name || courseId}"`,
+                    referenceId: review.id,
+                }
+            });
+
+            // === NOTIFICATION: Review created + points earned ===
+            try {
+                await notificationService.createNotification(
+                    userId,
+                    'new_review',
+                    '⭐ Đánh giá thành công!',
+                    `Bạn đã đánh giá khóa học "${courseName?.name || 'Khóa học'}" và nhận được +${POINTS_PER_REVIEW} điểm tích lũy!`,
+                    { courseId, courseName: courseName?.name, pointsEarned: POINTS_PER_REVIEW, reviewId: review.id }
+                );
+            } catch (notifErr) {
+                console.error('Lỗi gửi notification review (không ảnh hưởng review):', notifErr);
+            }
+
+            return {
+                review,
+                pointsEarned: POINTS_PER_REVIEW,
+                newAvgRating: Math.round(avgRating * 10) / 10,
+            };
         });
-
-        if (!paidOrder) {
-            const error = new Error('Bạn chưa mua khóa học này hoặc đơn hàng chưa thanh toán.');
-            error.statusCode = 400;
-            throw error;
-        }
-
-        // 2. Kiểm tra đã review chưa
-        const existingReview = await db.Review.findOne({
-            where: { userId, courseId },
-        });
-
-        if (existingReview) {
-            const error = new Error('Bạn đã đánh giá khóa học này rồi.');
-            error.statusCode = 400;
-            throw error;
-        }
-
-        // 3. Tạo review
-        const review = await db.Review.create({
-            userId,
-            courseId,
-            orderId: paidOrder.id,
-            rating,
-            comment: comment || null,
-        }, { transaction });
-
-        // 4. Cập nhật rating trung bình của khóa học
-        const avgResult = await db.Review.findOne({
-            where: { courseId },
-            attributes: [
-                [db.sequelize.fn('AVG', db.sequelize.col('rating')), 'avgRating'],
-                [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'totalReviews'],
-            ],
-            transaction,
-        });
-
-        const avgRating = parseFloat(avgResult.getDataValue('avgRating')) || 0;
-        await db.Course.update(
-            { rating: Math.round(avgRating * 10) / 10 },
-            { where: { id: courseId }, transaction }
-        );
-
-        // 5. Cộng điểm tích lũy cho user
-        await db.User.increment('loyaltyPoints', {
-            by: POINTS_PER_REVIEW,
-            where: { id: userId },
-            transaction,
-        });
-
-        // 6. Ghi log lịch sử điểm
-        const courseName = await db.Course.findByPk(courseId, {
-            attributes: ['name'],
-            transaction,
-        });
-
-        await db.LoyaltyPoint.create({
-            userId,
-            points: POINTS_PER_REVIEW,
-            type: 'earn',
-            description: `Đánh giá khóa học "${courseName?.name || courseId}"`,
-            referenceId: review.id,
-        }, { transaction });
-
-        await transaction.commit();
-
-        // === NOTIFICATION: Review created + points earned ===
-        try {
-            await notificationService.createNotification(
-                userId,
-                'new_review',
-                '⭐ Đánh giá thành công!',
-                `Bạn đã đánh giá khóa học "${courseName?.name || 'Khóa học'}" và nhận được +${POINTS_PER_REVIEW} điểm tích lũy!`,
-                { courseId, courseName: courseName?.name, pointsEarned: POINTS_PER_REVIEW, reviewId: review.id }
-            );
-        } catch (notifErr) {
-            console.error('Lỗi gửi notification review (không ảnh hưởng review):', notifErr);
-        }
-
-        return {
-            review,
-            pointsEarned: POINTS_PER_REVIEW,
-            newAvgRating: Math.round(avgRating * 10) / 10,
-        };
-
     } catch (error) {
-        await transaction.rollback();
         throw error;
     }
 };
@@ -115,42 +111,41 @@ export const createReview = async (userId, courseId, rating, comment) => {
  * Lấy danh sách đánh giá theo khóa học (có phân trang)
  */
 export const getReviewsByCourse = async (courseId, page = 1, limit = 10) => {
-    const offset = (page - 1) * limit;
+    const skip = (Number(page) - 1) * Number(limit);
 
-    const { count, rows } = await db.Review.findAndCountAll({
-        where: { courseId },
-        include: [{
-            model: db.User,
-            as: 'user',
-            attributes: ['id', 'firstName', 'lastName', 'image'],
-        }],
-        order: [['createdAt', 'DESC']],
-        limit: parseInt(limit),
-        offset,
-    });
+    const [rows, count] = await prisma.$transaction([
+        prisma.review.findMany({
+            where: { courseId: Number(courseId) },
+            include: {
+                user: {
+                    select: { id: true, firstName: true, lastName: true, image: true }
+                }
+            },
+            orderBy: { createdAt: 'desc' },
+            take: Number(limit),
+            skip,
+        }),
+        prisma.review.count({ where: { courseId: Number(courseId) } })
+    ]);
 
     // Lấy thống kê rating
-    const ratingStats = await db.Review.findAll({
-        where: { courseId },
-        attributes: [
-            'rating',
-            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
-        ],
-        group: ['rating'],
-        raw: true,
+    const ratingStats = await prisma.review.groupBy({
+        by: ['rating'],
+        where: { courseId: Number(courseId) },
+        _count: { id: true }
     });
 
     // Chuyển thành object { 1: count, 2: count, ... 5: count }
     const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     ratingStats.forEach(stat => {
-        distribution[stat.rating] = parseInt(stat.count);
+        distribution[stat.rating] = stat._count.id;
     });
 
     return {
         reviews: rows,
         pagination: {
-            currentPage: parseInt(page),
-            totalPages: Math.ceil(count / limit),
+            currentPage: Number(page),
+            totalPages: Math.ceil(count / Number(limit)),
             totalItems: count,
         },
         ratingDistribution: distribution,
@@ -161,14 +156,14 @@ export const getReviewsByCourse = async (courseId, page = 1, limit = 10) => {
  * Lấy tất cả review của user
  */
 export const getMyReviews = async (userId) => {
-    const reviews = await db.Review.findAll({
-        where: { userId },
-        include: [{
-            model: db.Course,
-            as: 'course',
-            attributes: ['id', 'name', 'slug', 'thumbnail'],
-        }],
-        order: [['createdAt', 'DESC']],
+    const reviews = await prisma.review.findMany({
+        where: { userId: Number(userId) },
+        include: {
+            course: {
+                select: { id: true, name: true, slug: true, thumbnail: true }
+            }
+        },
+        orderBy: { createdAt: 'desc' },
     });
 
     return reviews;
@@ -179,14 +174,14 @@ export const getMyReviews = async (userId) => {
  */
 export const checkCanReview = async (userId, courseId) => {
     // Kiểm tra đã mua chưa
-    const paidOrder = await db.Order.findOne({
-        where: { userId, status: 'paid' },
-        include: [{
-            model: db.OrderItem,
-            as: 'orderItems',
-            where: { courseId },
-            required: true,
-        }],
+    const paidOrder = await prisma.order.findFirst({
+        where: {
+            userId: Number(userId),
+            status: 'paid',
+            orderItems: {
+                some: { courseId: Number(courseId) }
+            }
+        }
     });
 
     if (!paidOrder) {
@@ -194,8 +189,8 @@ export const checkCanReview = async (userId, courseId) => {
     }
 
     // Kiểm tra đã review chưa
-    const existingReview = await db.Review.findOne({
-        where: { userId, courseId },
+    const existingReview = await prisma.review.findFirst({
+        where: { userId: Number(userId), courseId: Number(courseId) },
     });
 
     if (existingReview) {

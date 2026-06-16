@@ -1,16 +1,18 @@
-import db from '../models/index';
-
-const User = db.User;
+import prisma from '../config/prismaClient';
 
 export const getUserProfile = async (userId) => {
     try {
-        const user = await User.findByPk(userId, {
-            attributes: { exclude: ['password', 'otp', 'otpExpires'] },
+        const user = await prisma.user.findUnique({
+            where: { id: Number(userId) },
         });
         if (!user) {
             return { status: 404, message: 'Không tìm thấy người dùng.' };
         }
-        return { status: 200, data: user };
+        
+        // Loại bỏ các trường nhạy cảm
+        const { password, otp, otpExpires, ...safeUser } = user;
+
+        return { status: 200, data: safeUser };
     } catch (error) {
         console.error('Lỗi lấy hồ sơ:', error);
         throw error;
@@ -19,7 +21,7 @@ export const getUserProfile = async (userId) => {
 
 export const updateUserProfile = async (userId, data) => {
     try {
-        const user = await User.findByPk(userId);
+        const user = await prisma.user.findUnique({ where: { id: Number(userId) } });
         if (!user) {
             return {
                 status: 404,
@@ -32,7 +34,7 @@ export const updateUserProfile = async (userId, data) => {
         
         // Kiểm tra số điện thoại bị trùng
         if (data.phoneNumber !== undefined && data.phoneNumber !== user.phoneNumber) {
-            const existingPhone = await User.findOne({ where: { phoneNumber: data.phoneNumber } });
+            const existingPhone = await prisma.user.findFirst({ where: { phoneNumber: data.phoneNumber } });
             if (existingPhone) {
                 return {
                     status: 409, // Conflict
@@ -49,17 +51,22 @@ export const updateUserProfile = async (userId, data) => {
         if (data.gender !== undefined) allowedUpdates.gender = data.gender;
         if (data.image !== undefined) allowedUpdates.image = data.image;
 
-        await user.update(allowedUpdates);
+        await prisma.user.update({
+            where: { id: Number(userId) },
+            data: allowedUpdates
+        });
 
         // Lấy lại dữ liệu mới (ẩn password và otp)
-        const updatedUser = await User.findByPk(userId, {
-            attributes: { exclude: ['password', 'otp', 'otpExpires'] },
+        const updatedUser = await prisma.user.findUnique({
+            where: { id: Number(userId) }
         });
+        
+        const { password, otp, otpExpires, ...safeUpdatedUser } = updatedUser;
 
         return {
             status: 200,
             message: 'Cập nhật hồ sơ thành công.',
-            data: updatedUser,
+            data: safeUpdatedUser,
         };
     } catch (error) {
         console.error('Lỗi cập nhật hồ sơ:', error);

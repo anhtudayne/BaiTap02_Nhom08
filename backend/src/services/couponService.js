@@ -1,9 +1,8 @@
-import db from '../models';
-import { Op } from 'sequelize';
+import prisma from '../config/prismaClient';
 
 export const createCoupon = async (data) => {
     try {
-        const coupon = await db.Coupon.create(data);
+        const coupon = await prisma.coupon.create({ data });
         return coupon;
     } catch (error) {
         throw error;
@@ -12,8 +11,8 @@ export const createCoupon = async (data) => {
 
 export const getAllCoupons = async () => {
     try {
-        const coupons = await db.Coupon.findAll({
-            order: [['createdAt', 'DESC']]
+        const coupons = await prisma.coupon.findMany({
+            orderBy: { createdAt: 'desc' }
         });
         return coupons;
     } catch (error) {
@@ -23,14 +22,17 @@ export const getAllCoupons = async () => {
 
 export const updateCoupon = async (id, data) => {
     try {
-        const coupon = await db.Coupon.findByPk(id);
+        const coupon = await prisma.coupon.findUnique({ where: { id: Number(id) } });
         if (!coupon) {
             const error = new Error('Không tìm thấy mã giảm giá');
             error.statusCode = 404;
             throw error;
         }
-        await coupon.update(data);
-        return coupon;
+        const updatedCoupon = await prisma.coupon.update({
+            where: { id: Number(id) },
+            data
+        });
+        return updatedCoupon;
     } catch (error) {
         throw error;
     }
@@ -38,13 +40,13 @@ export const updateCoupon = async (id, data) => {
 
 export const deleteCoupon = async (id) => {
     try {
-        const coupon = await db.Coupon.findByPk(id);
+        const coupon = await prisma.coupon.findUnique({ where: { id: Number(id) } });
         if (!coupon) {
             const error = new Error('Không tìm thấy mã giảm giá');
             error.statusCode = 404;
             throw error;
         }
-        await coupon.destroy();
+        await prisma.coupon.delete({ where: { id: Number(id) } });
         return true;
     } catch (error) {
         throw error;
@@ -53,7 +55,7 @@ export const deleteCoupon = async (id) => {
 
 export const validateCoupon = async (code, cartTotal) => {
     try {
-        const coupon = await db.Coupon.findOne({ where: { code } });
+        const coupon = await prisma.coupon.findUnique({ where: { code } });
 
         if (!coupon) {
             const error = new Error('Mã giảm giá không tồn tại');
@@ -112,10 +114,11 @@ export const validateCoupon = async (code, cartTotal) => {
     }
 };
 
-export const incrementCouponUsage = async (code, transaction) => {
+export const incrementCouponUsage = async (code, tx) => {
     if (!code) return;
-    await db.Coupon.increment('usedCount', {
+    const client = tx || prisma;
+    await client.coupon.update({
         where: { code },
-        transaction
+        data: { usedCount: { increment: 1 } }
     });
 };

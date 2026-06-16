@@ -1,0 +1,350 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  Int               @id @default(autoincrement())
+  email               String            @unique
+  password            String
+  firstName           String
+  lastName            String
+  phoneNumber         String?           @db.VarChar(10)
+  address             String?
+  gender              Boolean?          @default(true)
+  image               String?
+  roleId              String?           @default("user")
+  isActive            Boolean?          @default(false)
+  otp                 String?
+  otpExpires          DateTime?
+  loyaltyPoints       Int?              @default(0)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  cartItems           Cart[]
+  orders              Order[]
+  userCourses         UserCourse[]
+  reviews             Review[]
+  loyaltyPointHistory LoyaltyPoint[]
+  favoriteCourses     FavoriteCourse[]
+  viewedCourses       ViewedCourse[]
+  notifications       Notification[]
+  
+  @@map("Users")
+}
+
+model Category {
+  id          Int      @id @default(autoincrement())
+  name        String
+  slug        String   @unique
+  description String?
+  image       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  courses     Course[]
+
+  @@map("Categories")
+}
+
+model Course {
+  id              Int               @id @default(autoincrement())
+  name            String
+  slug            String            @unique
+  description     String?           @db.Text
+  thumbnail       String?
+  price           Decimal           @db.Decimal(12, 0)
+  salePrice       Decimal?          @db.Decimal(12, 0)
+  instructor      String
+  duration        String?
+  level           Level             @default(beginner)
+  language        String?           @default("Tiếng Việt")
+  totalLessons    Int?              @default(0)
+  totalStudents   Int?              @default(0)
+  rating          Decimal?          @default(0) @db.Decimal(2, 1)
+  isFeatured      Boolean?          @default(false)
+  isNewArrival    Boolean?          @default(false)
+  isBestSeller    Boolean?          @default(false)
+  categoryId      Int?
+  status          CourseStatus      @default(draft)
+  viewCount       Int?              @default(0)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  category        Category?         @relation(fields: [categoryId], references: [id])
+  images          CourseImage[]
+  cartItems       Cart[]
+  orderItems      OrderItem[]
+  userCourses     UserCourse[]
+  reviews         Review[]
+  favoriteCourses FavoriteCourse[]
+  viewedCourses   ViewedCourse[]
+  sections        Section[]
+
+  @@map("Courses")
+}
+
+enum Level {
+  beginner
+  intermediate
+  advanced
+}
+
+enum CourseStatus {
+  draft
+  published
+}
+
+model CourseImage {
+  id        Int      @id @default(autoincrement())
+  imageUrl  String
+  isPrimary Boolean? @default(false)
+  sortOrder Int?     @default(0)
+  courseId  Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  course    Course?  @relation(fields: [courseId], references: [id])
+
+  @@map("CourseImages")
+}
+
+model Cart {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  courseId  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id])
+
+  @@map("Carts")
+}
+
+model Order {
+  id                 Int         @id @default(autoincrement())
+  code               String      @unique
+  userId             Int
+  totalAmount        Decimal     @db.Decimal(12, 0)
+  status             OrderStatus @default(pending)
+  paymentMethod      String?     @default("bank_transfer")
+  couponCode         String?
+  discountFromCoupon Decimal?    @default(0) @db.Decimal(12, 0)
+  discountFromPoints Decimal?    @default(0) @db.Decimal(12, 0)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  user               User        @relation(fields: [userId], references: [id])
+  orderItems         OrderItem[]
+  reviews            Review[]
+
+  @@map("Orders")
+}
+
+enum OrderStatus {
+  pending
+  paid
+  cancelled
+}
+
+model OrderItem {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  courseId  Int
+  price     Decimal  @db.Decimal(12, 0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order     Order    @relation(fields: [orderId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id])
+
+  @@map("OrderItems")
+}
+
+model UserCourse {
+  id        Int              @id @default(autoincrement())
+  userId    Int
+  courseId  Int
+  status    UserCourseStatus @default(active)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  user      User             @relation(fields: [userId], references: [id])
+  course    Course           @relation(fields: [courseId], references: [id])
+
+  @@map("UserCourses")
+}
+
+enum UserCourseStatus {
+  active
+  suspended
+}
+
+model Review {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  courseId  Int
+  orderId   Int
+  rating    Int
+  comment   String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id])
+  order     Order    @relation(fields: [orderId], references: [id])
+
+  @@unique([userId, courseId], name: "unique_user_course_review")
+  @@map("Reviews")
+}
+
+model Section {
+  id        Int      @id @default(autoincrement())
+  courseId  Int?
+  title     String?
+  order     Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  course    Course?  @relation(fields: [courseId], references: [id])
+  lessons   Lesson[]
+
+  @@map("Sections")
+}
+
+model Lesson {
+  id        Int      @id @default(autoincrement())
+  sectionId Int?
+  title     String?
+  type      String?
+  content   String?  @db.Text
+  videoUrl  String?
+  duration  String?
+  order     Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  section   Section? @relation(fields: [sectionId], references: [id])
+
+  @@map("Lessons")
+}
+
+model FavoriteCourse {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  courseId  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id])
+
+  @@unique([userId, courseId], name: "unique_user_course_favorite")
+  @@map("FavoriteCourses")
+}
+
+model ViewedCourse {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  courseId  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id])
+  course    Course   @relation(fields: [courseId], references: [id])
+
+  @@unique([userId, courseId], name: "unique_user_course_viewed")
+  @@map("ViewedCourses")
+}
+
+model LoyaltyPoint {
+  id          Int              @id @default(autoincrement())
+  userId      Int
+  points      Int
+  type        LoyaltyPointType
+  description String?
+  referenceId Int?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id])
+
+  @@map("LoyaltyPoints")
+}
+
+enum LoyaltyPointType {
+  earn
+  spend
+}
+
+model Notification {
+  id          Int              @id @default(autoincrement())
+  userId      Int
+  type        NotificationType
+  title       String
+  message     String           @db.Text
+  data        Json?
+  isRead      Boolean?         @default(false)
+  isEmailSent Boolean?         @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id])
+
+  @@map("Notifications")
+}
+
+enum NotificationType {
+  order_created
+  order_paid
+  new_review
+  points_earned
+}
+
+model Coupon {
+  id            Int            @id @default(autoincrement())
+  code          String         @unique
+  discountType  DiscountType
+  discountValue Decimal        @db.Decimal(12, 0)
+  minOrderValue Decimal?       @default(0) @db.Decimal(12, 0)
+  maxDiscount   Decimal?       @db.Decimal(12, 0)
+  startDate     DateTime
+  endDate       DateTime
+  usageLimit    Int?
+  usedCount     Int?           @default(0)
+  isActive      Boolean?       @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("Coupons")
+}
+
+enum DiscountType {
+  percent
+  fixed
+}
+
+model WebhookLog {
+  id             Int       @id @default(autoincrement())
+  referenceCode  String?
+  gateway        String?
+  transactionDate DateTime?
+  accountNumber  String?
+  subAccount     String?
+  content        String?   @db.Text
+  transferType   String?
+  transferAmount Decimal?  @db.Decimal(12, 0)
+  accumulated    Decimal?  @db.Decimal(12, 0)
+  status         String?   @default("received")
+  errorMessage   String?   @db.Text
+  payload        Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("WebhookLogs")
+}

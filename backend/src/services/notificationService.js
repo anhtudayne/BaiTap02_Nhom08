@@ -1,4 +1,4 @@
-import db from '../models';
+import prisma from '../config/prismaClient';
 import { emitToUser } from '../socketManager';
 
 /**
@@ -7,14 +7,16 @@ import { emitToUser } from '../socketManager';
  */
 export const createNotification = async (userId, type, title, message, data = null) => {
     try {
-        const notification = await db.Notification.create({
-            userId,
-            type,
-            title,
-            message,
-            data,
-            isRead: false,
-            isEmailSent: false,
+        const notification = await prisma.notification.create({
+            data: {
+                userId: Number(userId),
+                type,
+                title,
+                message,
+                data: data ? data : undefined,
+                isRead: false,
+                isEmailSent: false,
+            }
         });
 
         // Push real-time via Socket.IO
@@ -44,20 +46,23 @@ export const createNotification = async (userId, type, title, message, data = nu
  * Get notifications for a user with pagination.
  */
 export const getNotifications = async (userId, page = 1, limit = 20) => {
-    const offset = (page - 1) * limit;
+    const skip = (Number(page) - 1) * Number(limit);
 
-    const { count, rows } = await db.Notification.findAndCountAll({
-        where: { userId },
-        order: [['createdAt', 'DESC']],
-        limit: parseInt(limit),
-        offset,
-    });
+    const [rows, count] = await prisma.$transaction([
+        prisma.notification.findMany({
+            where: { userId: Number(userId) },
+            orderBy: { createdAt: 'desc' },
+            take: Number(limit),
+            skip,
+        }),
+        prisma.notification.count({ where: { userId: Number(userId) } })
+    ]);
 
     return {
         notifications: rows,
         pagination: {
-            currentPage: parseInt(page),
-            totalPages: Math.ceil(count / limit),
+            currentPage: Number(page),
+            totalPages: Math.ceil(count / Number(limit)),
             totalItems: count,
         },
     };
@@ -67,8 +72,8 @@ export const getNotifications = async (userId, page = 1, limit = 20) => {
  * Mark a single notification as read.
  */
 export const markAsRead = async (userId, notificationId) => {
-    const notification = await db.Notification.findOne({
-        where: { id: notificationId, userId },
+    const notification = await prisma.notification.findFirst({
+        where: { id: Number(notificationId), userId: Number(userId) },
     });
 
     if (!notification) {
@@ -77,20 +82,22 @@ export const markAsRead = async (userId, notificationId) => {
         throw error;
     }
 
-    notification.isRead = true;
-    await notification.save();
+    const updated = await prisma.notification.update({
+        where: { id: notification.id },
+        data: { isRead: true }
+    });
 
-    return notification;
+    return updated;
 };
 
 /**
  * Mark all notifications as read for a user.
  */
 export const markAllAsRead = async (userId) => {
-    await db.Notification.update(
-        { isRead: true },
-        { where: { userId, isRead: false } }
-    );
+    await prisma.notification.updateMany({
+        where: { userId: Number(userId), isRead: false },
+        data: { isRead: true }
+    });
 
     // Push updated count (0)
     emitToUser(userId, 'unread_count', { count: 0 });
@@ -100,8 +107,8 @@ export const markAllAsRead = async (userId) => {
  * Get unread notification count.
  */
 export const getUnreadCount = async (userId) => {
-    const count = await db.Notification.count({
-        where: { userId, isRead: false },
+    const count = await prisma.notification.count({
+        where: { userId: Number(userId), isRead: false },
     });
     return count;
 };

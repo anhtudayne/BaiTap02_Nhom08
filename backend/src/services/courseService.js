@@ -1,31 +1,21 @@
-const db = require('../models/index');
-const { Op } = require('sequelize');
-const Course = db.Course;
-const Category = db.Category;
-const CourseImage = db.CourseImage;
-const Section = db.Section;
-const Lesson = db.Lesson;
+import prisma from '../config/prismaClient';
+import slugify from 'slugify';
 
-const includeOptions = [
-    { model: Category, as: 'category', attributes: ['id', 'name', 'slug'] },
-    { model: CourseImage, as: 'images', attributes: ['id', 'imageUrl', 'isPrimary', 'sortOrder'] },
-];
+const courseInclude = {
+    category: { select: { id: true, name: true, slug: true } },
+    images: { select: { id: true, imageUrl: true, isPrimary: true, sortOrder: true } }
+};
 
-const courseDetailIncludeOptions = [
-    ...includeOptions,
-    {
-        model: Section,
-        as: 'sections',
-        include: [{
-            model: Lesson,
-            as: 'lessons'
-        }]
+const courseDetailInclude = {
+    ...courseInclude,
+    sections: {
+        orderBy: { order: 'asc' },
+        include: {
+            lessons: { orderBy: { order: 'asc' } }
+        }
     }
-];
+};
 
-const slugify = require('slugify');
-
-// Lấy danh sách khóa học (filter, search, sort, pagination)
 const getCourses = async (params) => {
     const { search, categories, levels, min_price, max_price, sort = 'newest', page = 1, limit = 12, status = 'published' } = params;
     const where = {};
@@ -34,39 +24,55 @@ const getCourses = async (params) => {
         where.status = status;
     }
 
-    if (search) where.name = { [Op.like]: `%${search}%` };
+    if (search) {
+        where.name = { contains: search };
+    }
     
     if (categories) {
         const catArray = typeof categories === 'string' ? categories.split(',') : categories;
-        where.categoryId = { [Op.in]: catArray };
+        where.categoryId = { in: catArray.map(Number) };
     }
     
     if (levels) {
         const levelArray = typeof levels === 'string' ? levels.split(',') : levels;
-        where.level = { [Op.in]: levelArray };
+        where.level = { in: levelArray };
     }
     
     if (min_price || max_price) {
         where.price = {};
-        if (min_price) where.price[Op.gte] = Number(min_price);
-        if (max_price) where.price[Op.lte] = Number(max_price);
+        if (min_price) where.price.gte = Number(min_price);
+        if (max_price) where.price.lte = Number(max_price);
     }
 
-    const order = {
-        newest: [['isNewArrival', 'DESC'], ['createdAt', 'DESC']],
-        price_asc: [['price', 'ASC']],
-        price_desc: [['price', 'DESC']],
-        rating_desc: [['rating', 'DESC']],
-        best_seller: [['isBestSeller', 'DESC'], ['totalStudents', 'DESC']],
-    }[sort] || [['createdAt', 'DESC']];
+    let orderBy = [];
+    switch (sort) {
+        case 'newest':
+            orderBy = [{ isNewArrival: 'desc' }, { createdAt: 'desc' }];
+            break;
+        case 'price_asc':
+            orderBy = [{ price: 'asc' }];
+            break;
+        case 'price_desc':
+            orderBy = [{ price: 'desc' }];
+            break;
+        case 'rating_desc':
+            orderBy = [{ rating: 'desc' }];
+            break;
+        case 'best_seller':
+            orderBy = [{ isBestSeller: 'desc' }, { totalStudents: 'desc' }];
+            break;
+        default:
+            orderBy = [{ createdAt: 'desc' }];
+    }
 
     const parsedLimit = parseInt(limit);
     const parsedPage = parseInt(page);
-    const offset = (parsedPage - 1) * parsedLimit;
+    const skip = (parsedPage - 1) * parsedLimit;
     
-    const { count, rows } = await Course.findAndCountAll({
-        where, include: includeOptions, order, limit: parsedLimit, offset, distinct: true,
-    });
+    const [rows, count] = await prisma.$transaction([
+        prisma.course.findMany({ where, include: courseInclude, orderBy, take: parsedLimit, skip }),
+        prisma.course.count({ where })
+    ]);
     
     return { 
         data: rows, 
@@ -79,50 +85,45 @@ const getCourses = async (params) => {
 };
 
 const getFeaturedCourses = async () => {
-    const data = await Course.findAll({ where: { isFeatured: true, status: 'published' }, include: includeOptions, limit: 8 });
+    const data = await prisma.course.findMany({ where: { isFeatured: true, status: 'published' }, include: courseInclude, take: 8 });
     return { data };
 };
 
 const getNewArrivals = async () => {
-    const data = await Course.findAll({ where: { status: 'published' }, include: includeOptions, order: [['createdAt', 'DESC']], limit: 8 });
+    const data = await prisma.course.findMany({ where: { status: 'published' }, include: courseInclude, orderBy: { createdAt: 'desc' }, take: 8 });
     return { data };
 };
 
 const getBestSellers = async () => {
-    const data = await Course.findAll({ where: { isBestSeller: true, status: 'published' }, include: includeOptions, order: [['totalStudents', 'DESC']], limit: 8 });
+    const data = await prisma.course.findMany({ where: { isBestSeller: true, status: 'published' }, include: courseInclude, orderBy: { totalStudents: 'desc' }, take: 8 });
     return { data };
 };
 
 const getCourseBySlug = async (slug) => {
-    const course = await Course.findOne({ 
+    const course = await prisma.course.findUnique({ 
         where: { slug }, 
-        include: courseDetailIncludeOptions,
-        order: [
-            [{ model: Section, as: 'sections' }, 'order', 'ASC'],
-            [{ model: Section, as: 'sections' }, { model: Lesson, as: 'lessons' }, 'order', 'ASC']
-        ]
+        include: courseDetailInclude
     });
     if (!course) return { data: null };
     
-    const data = course.toJSON();
-    data.buyersCount = await db.UserCourse.count({ where: { courseId: course.id } });
-    data.reviewsCount = await db.Review.count({ where: { courseId: course.id } });
+    const buyersCount = await prisma.userCourse.count({ where: { courseId: course.id } });
+    const reviewsCount = await prisma.review.count({ where: { courseId: course.id } });
     
-    return { data };
+    return { data: { ...course, buyersCount, reviewsCount } };
 };
 
 const getRelatedCourses = async (id) => {
-    const course = await Course.findByPk(id);
+    const course = await prisma.course.findUnique({ where: { id: Number(id) } });
     if (!course) return { data: [] };
-    const data = await Course.findAll({
-        where: { categoryId: course.categoryId, id: { [Op.ne]: id }, status: 'published' },
-        include: includeOptions, limit: 4,
+    const data = await prisma.course.findMany({
+        where: { categoryId: course.categoryId, id: { not: Number(id) }, status: 'published' },
+        include: courseInclude, take: 4,
     });
     return { data };
 };
 
 const getCategories = async () => {
-    const data = await Category.findAll({ order: [['name', 'ASC']] });
+    const data = await prisma.category.findMany({ orderBy: { name: 'asc' } });
     return { data };
 };
 
@@ -132,7 +133,7 @@ const createCourse = async (courseData) => {
             courseData.slug = slugify(courseData.name, { lower: true, strict: true }) + '-' + Date.now();
         }
         courseData.status = 'draft';
-        const newCourse = await Course.create(courseData);
+        const newCourse = await prisma.course.create({ data: courseData });
         return { data: newCourse };
     } catch (error) {
         throw error;
@@ -140,27 +141,32 @@ const createCourse = async (courseData) => {
 };
 
 const publishCourse = async (id) => {
-    const course = await Course.findByPk(id);
+    const course = await prisma.course.findUnique({ where: { id: Number(id) } });
     if (!course) return { status: 404, message: 'Không tìm thấy khóa học.' };
-    course.status = 'published';
-    await course.save();
-    return { status: 200, message: 'Đã xuất bản khóa học!', data: course };
+    
+    const updatedCourse = await prisma.course.update({
+        where: { id: Number(id) },
+        data: { status: 'published' }
+    });
+    return { status: 200, message: 'Đã xuất bản khóa học!', data: updatedCourse };
 };
 
-// Khóa học theo danh mục (phân trang cho Infinite Scroll)
 const getCoursesByCategory = async (categorySlug, page = 1, limit = 6) => {
-    const category = await Category.findOne({ where: { slug: categorySlug } });
+    const category = await prisma.category.findUnique({ where: { slug: categorySlug } });
     if (!category) return { status: 404, message: 'Không tìm thấy danh mục.' };
 
-    const offset = (Number(page) - 1) * Number(limit);
-    const { count, rows } = await Course.findAndCountAll({
-        where: { categoryId: category.id, status: 'published' },
-        include: includeOptions,
-        order: [['createdAt', 'DESC']],
-        limit: Number(limit),
-        offset,
-        distinct: true,
-    });
+    const skip = (Number(page) - 1) * Number(limit);
+    
+    const [rows, count] = await prisma.$transaction([
+        prisma.course.findMany({
+            where: { categoryId: category.id, status: 'published' },
+            include: courseInclude,
+            orderBy: { createdAt: 'desc' },
+            take: Number(limit),
+            skip
+        }),
+        prisma.course.count({ where: { categoryId: category.id, status: 'published' } })
+    ]);
 
     return {
         status: 200,
@@ -171,25 +177,27 @@ const getCoursesByCategory = async (categorySlug, page = 1, limit = 6) => {
 };
 
 const getTopViewedCourses = async () => {
-    const data = await Course.findAll({
+    const data = await prisma.course.findMany({
         where: { status: 'published' },
-        order: [['viewCount', 'DESC']],
-        limit: 10,
-        include: includeOptions
+        orderBy: { viewCount: 'desc' },
+        take: 10,
+        include: courseInclude
     });
     return { status: 200, data };
 };
 
 const incrementViewCount = async (id) => {
-    // Atomic increment
-    await Course.increment('viewCount', { by: 1, where: { id } });
+    await prisma.course.update({
+        where: { id: Number(id) },
+        data: { viewCount: { increment: 1 } }
+    });
     return { status: 200, message: 'View count updated successfully' };
 };
 
 const checkEnrollmentService = async (userId, slug) => {
-    const course = await db.Course.findOne({ where: { slug } });
+    const course = await prisma.course.findUnique({ where: { slug } });
     if (!course) return { enrolled: false };
-    const enrollment = await db.UserCourse.findOne({ where: { userId, courseId: course.id } });
+    const enrollment = await prisma.userCourse.findFirst({ where: { userId: Number(userId), courseId: course.id } });
     return { enrolled: !!enrollment, courseId: course.id };
 };
 
